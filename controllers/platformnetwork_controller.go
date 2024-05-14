@@ -71,9 +71,10 @@ func (r *PlatformNetworkReconciler) UpdateInsyncStatus(client *gophercloud.Servi
 // Reconciled/Insync to false only if Generation != ObservedGeneration.
 // Note that for deletion we are just cleaning up the finalizer and we
 // are not specifically deleting network object on the system.
-func (r *PlatformNetworkReconciler) ReconcileResource(client *gophercloud.ServiceClient, instance *starlingxv1.PlatformNetwork, request_namespace string) (err error) {
+func (r *PlatformNetworkReconciler) ReconcileResource(client *gophercloud.ServiceClient, instance *starlingxv1.PlatformNetwork, request_namespace string, scope_updated bool) (err error) {
 	if instance.DeletionTimestamp.IsZero() {
-		if instance.Status.ObservedGeneration != instance.ObjectMeta.Generation {
+		if instance.Status.ObservedGeneration != instance.ObjectMeta.Generation ||
+			scope_updated {
 			host_instance, err := r.CloudManager.GetActiveHost(request_namespace, client)
 			if err != nil {
 				msg := "failed to get active host"
@@ -81,14 +82,17 @@ func (r *PlatformNetworkReconciler) ReconcileResource(client *gophercloud.Servic
 				return common.NewUserDataError(msg)
 			}
 
-			host_instance.Status.InSync = false
-			host_instance.Status.Reconciled = false
-			err = r.Client.Status().Update(context.TODO(), host_instance)
+			err = r.CloudManager.NotifyResource(host_instance)
 			if err != nil {
-				msg := fmt.Sprintf("Failed to update '%s' host instance status", host_instance.Name)
+				msg := fmt.Sprintf("Failed to notify '%s' active host instance", host_instance.Name)
 				logPlatformNetwork.Error(err, msg)
 				return common.NewResourceConfigurationDependency(msg)
 			}
+
+			r.ReconcilerEventLogger.NormalEvent(instance,
+				common.ResourceUpdated,
+				"Host '%s' has been notified",
+				host_instance.Name)
 
 			// Set Generation = ObservedGeneration only when active
 			// host controller is successfully notified.
@@ -160,6 +164,26 @@ func (r *PlatformNetworkReconciler) GetScopeConfig(instance *starlingxv1.Platfor
 		}
 	}
 	return deploymentScope, nil
+}
+
+func (r *PlatformNetworkReconciler) UpdateDeploymentScope(instance *starlingxv1.PlatformNetwork) (error, bool) {
+	scope, err := r.GetScopeConfig(instance)
+	if err != nil {
+		logPlatformNetwork.Error(err, "failed to fetch deploymentScope")
+		return err, false
+	}
+
+	if instance.Status.DeploymentScope != scope {
+		instance.Status.DeploymentScope = scope
+		err := r.Client.Status().Update(context.TODO(), instance)
+		if err != nil {
+			logPlatformNetwork.Error(err, "failed to update deploymentScope")
+			return err, false
+		}
+		return nil, true
+	}
+
+	return nil, false
 }
 
 // Update deploymentScope and ReconcileAfterInSync in instance
@@ -250,6 +274,7 @@ func (r *PlatformNetworkReconciler) UpdateConfigStatus(instance *starlingxv1.Pla
 // +kubebuilder:rbac:groups=starlingx.windriver.com,resources=platformnetworks/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=starlingx.windriver.com,resources=platformnetworks/finalizers,verbs=update
 func (r *PlatformNetworkReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
+	var scope_updated bool
 	_ = log.FromContext(ctx)
 
 	// To reduce the repitition of adding the resource name to every log we
@@ -289,7 +314,14 @@ func (r *PlatformNetworkReconciler) Reconcile(ctx context.Context, request ctrl.
 
 	if instance.Status.ObservedGeneration == instance.ObjectMeta.Generation &&
 		instance.Status.Reconciled {
-		return ctrl.Result{}, nil
+
+		// Update the deploymentScope if necessary
+		err, scope_updated = r.UpdateDeploymentScope(instance)
+		if err != nil {
+			return reconcile.Result{}, err
+		} else if !scope_updated {
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// Update scope from configuration
@@ -338,7 +370,7 @@ func (r *PlatformNetworkReconciler) Reconcile(ctx context.Context, request ctrl.
 
 	if !r.CloudManager.IsNotifyingActiveHost() {
 		r.CloudManager.SetNotifyingActiveHost(true)
-		err = r.ReconcileResource(platformClient, instance, request.NamespacedName.Namespace)
+		err = r.ReconcileResource(platformClient, instance, request.NamespacedName.Namespace, scope_updated)
 		r.CloudManager.SetNotifyingActiveHost(false)
 	} else {
 		err = common.NewHostNotifyError("waiting to notify active host")

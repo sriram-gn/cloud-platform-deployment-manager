@@ -69,14 +69,17 @@ func (r *AddressPoolReconciler) ReconcileResource(client *gophercloud.ServiceCli
 				return common.NewUserDataError(msg)
 			}
 
-			host_instance.Status.InSync = false
-			host_instance.Status.Reconciled = false
-			err = r.Client.Status().Update(context.TODO(), host_instance)
+			err = r.CloudManager.NotifyResource(host_instance)
 			if err != nil {
-				msg := fmt.Sprintf("Failed to update '%s' host instance status", host_instance.Name)
+				msg := fmt.Sprintf("Failed to notify '%s' active host instance", host_instance.Name)
 				logAddressPool.Error(err, msg)
 				return common.NewResourceConfigurationDependency(msg)
 			}
+
+			r.ReconcilerEventLogger.NormalEvent(instance,
+				common.ResourceUpdated,
+				"Host '%s' has been notified",
+				host_instance.Name)
 
 			// Set Generation = ObservedGeneration only when active
 			// host controller is successfully notified.

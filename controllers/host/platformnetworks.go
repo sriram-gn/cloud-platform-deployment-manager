@@ -439,6 +439,29 @@ func (r *HostReconciler) IsReconfiguration(client *gophercloud.ServiceClient, ne
 	return nil, false
 }
 
+func (r *HostReconciler) ShouldReconcileStaticNetworks(client *gophercloud.ServiceClient,
+	network_instance *starlingxv1.PlatformNetwork,
+	addrpool_instance *starlingxv1.AddressPool,
+	uuid string) (error, bool) {
+
+	if addrpool_instance != nil {
+		err, is_reconfig := r.IsReconfiguration(client, network_instance, addrpool_instance)
+		if err != nil {
+			return err, false
+		}
+		if !is_reconfig {
+			return nil, true
+		}
+	} else {
+		// for networks
+		if uuid == "" {
+			return nil, true
+		}
+	}
+
+	return nil, false
+}
+
 // ShouldReconcile is a very important function that really controls the reconciliation
 // behaviour of network and associated addresspools. Note that parameters 'update_required'
 // and 'uuid' refers to address pool update_required and address pool uuid when called from
@@ -455,21 +478,20 @@ func (r *HostReconciler) ShouldReconcile(client *gophercloud.ServiceClient, netw
 		default:
 			// Allow fresh configuration of networks / addrpools other than
 			// oam / mgmt / admin in day-1 but not reconfiguration.
-			if addrpool_instance != nil {
-				err, is_reconfig := r.IsReconfiguration(client, network_instance, addrpool_instance)
-				if err != nil {
-					return err, false
-				}
-				if !is_reconfig {
-					return nil, true
-				}
-			} else {
-				// for networks
-				if uuid == "" {
-					return nil, true
-				}
-			}
-
+			return r.ShouldReconcileStaticNetworks(client, network_instance, addrpool_instance, uuid)
+		}
+	} else if network_instance.Status.DeploymentScope == cloudManager.ScopePrincipal {
+		switch network_instance.Spec.Type {
+		case cloudManager.OAMNetworkType,
+			cloudManager.MgmtNetworkType,
+			cloudManager.AdminNetworkType:
+			// Allow both fresh configuration / reconfiguration of networks / addrpools
+			// such as oam / mgmt / admin in day-2.
+			return nil, true
+		default:
+			// Allow fresh configuration of networks / addrpools other than
+			// oam / mgmt / admin in day-2 but not reconfiguration.
+			return r.ShouldReconcileStaticNetworks(client, network_instance, addrpool_instance, uuid)
 		}
 	}
 
@@ -710,6 +732,16 @@ func (r *HostReconciler) UpdateAddrPoolReconciliationStatus(
 			addrpool_instance.Status.Reconciled = is_reconciled
 		}
 		addrpool_instance.Status.InSync = is_reconciled
+	} else if network_instance.Status.DeploymentScope == cloudManager.ScopePrincipal {
+		if !should_reconcile {
+			// Prevents raising alarm if configuration of given network type
+			// is unsupported in day-2 and system is out-of-sync.
+			// Reconciled will serve as reconciliation indicator in this case.
+			addrpool_instance.Status.InSync = true
+		} else {
+			addrpool_instance.Status.InSync = is_reconciled
+		}
+		addrpool_instance.Status.Reconciled = is_reconciled
 	}
 
 	err := r.Client.Status().Update(context.TODO(), addrpool_instance)
@@ -809,6 +841,14 @@ func (r *HostReconciler) ReconcileNetworkAndAddressPools(
 		is_reconciled,
 		*should_reconcile)
 
+	if *should_reconcile && err != nil {
+		//Reconciliation request will be requeued
+		return err
+	} else if err_status != nil {
+		//Reconciliation request will be requeued
+		return err_status
+	}
+
 	// Update network-addresspool only if addresspool has been reconciled.
 	if *should_reconcile && is_reconciled {
 		logHost.V(2).Info(
@@ -818,14 +858,6 @@ func (r *HostReconciler) ReconcileNetworkAndAddressPools(
 		if update_err != nil {
 			return update_err
 		}
-	}
-
-	if *should_reconcile && err != nil {
-		//Reconciliation request will be requeued
-		return err
-	} else if err_status != nil {
-		//Reconciliation request will be requeued
-		return err_status
 	}
 
 	return nil
@@ -838,9 +870,110 @@ func (r *HostReconciler) ReconcilePlatformNetworkBootstrap(
 	addrpool_instance *starlingxv1.AddressPool,
 	system_info *cloudManager.SystemInfo) error {
 
-	err := r.ReconcileNetworkAndAddressPools(client, network_instance, addrpool_instance, system_info)
-	if err != nil {
-		return err
+	return r.ReconcileNetworkAndAddressPools(client, network_instance, addrpool_instance, system_info)
+
+}
+
+func (r *HostReconciler) TriggerHostLockStrategy(host_instance *starlingxv1.Host, host_id string, host_personality string) error {
+
+	if host_instance.Status.StrategyRequired != cloudManager.StrategyLockRequired {
+		host_instance.Status.StrategyRequired = cloudManager.StrategyLockRequired
+
+		r.CloudManager.SetResourceInfo(cloudManager.ResourceHost,
+			host_personality,
+			host_instance.Name,
+			host_instance.Status.Reconciled,
+			host_instance.Status.StrategyRequired)
+
+		err := r.Client.Status().Update(context.TODO(), host_instance)
+		if err != nil {
+			logHost.Error(err, "failed to update host strategy")
+			return err
+		}
+	}
+
+	msg := fmt.Sprintf("Waiting for %s to be in locked state to reconcile platform networks", host_instance.Name)
+	m := NewLockedDisabledHostMonitor(host_instance, host_id)
+	return r.CloudManager.StartMonitor(m, msg)
+
+}
+
+func (r *HostReconciler) ReconcileMgmtPrincipalSimplex(
+	client *gophercloud.ServiceClient,
+	host_instance *starlingxv1.Host,
+	host *v1info.HostInfo,
+	network_instance *starlingxv1.PlatformNetwork,
+	addrpool_instance *starlingxv1.AddressPool,
+	system_info *cloudManager.SystemInfo) error {
+
+	if host.IsLockedDisabled() {
+		return r.ReconcileNetworkAndAddressPools(client, network_instance, addrpool_instance, system_info)
+	} else {
+		return r.TriggerHostLockStrategy(host_instance, host.ID, host.Personality)
+	}
+}
+
+func (r *HostReconciler) ReconcilePlatformNetworkPrincipalSimplex(
+	client *gophercloud.ServiceClient,
+	host_instance *starlingxv1.Host,
+	host *v1info.HostInfo,
+	network_instance *starlingxv1.PlatformNetwork,
+	addrpool_instance *starlingxv1.AddressPool,
+	system_info *cloudManager.SystemInfo) error {
+
+	switch network_instance.Spec.Type {
+	case cloudManager.OAMNetworkType,
+		cloudManager.MgmtNetworkType,
+		cloudManager.AdminNetworkType:
+
+		system_addrpool, err := GetSystemAddrPool(client, addrpool_instance)
+		if err != nil {
+			return err
+		}
+
+		_, update_required, _ := r.IsAddrPoolUpdateRequired(network_instance, addrpool_instance, system_addrpool)
+
+		validation_result := r.ValidateAddressPool(network_instance, addrpool_instance, system_info)
+
+		if update_required && validation_result {
+
+			// This is valid mgmt network reconfiguration / fresh configuration and
+			// spec is clearly not in sync with the system and hence it should be
+			// allowed for reconciliation.
+
+			if network_instance.Spec.Type == cloudManager.MgmtNetworkType {
+				return r.ReconcileMgmtPrincipalSimplex(
+					client,
+					host_instance,
+					host,
+					network_instance,
+					addrpool_instance,
+					system_info)
+			}
+
+		}
+
+		return r.ReconcileNetworkAndAddressPools(client, network_instance, addrpool_instance, system_info)
+
+	default:
+		return r.ReconcileNetworkAndAddressPools(client, network_instance, addrpool_instance, system_info)
+	}
+
+}
+
+func (r *HostReconciler) ReconcilePlatformNetworkPrincipal(
+	client *gophercloud.ServiceClient,
+	host_instance *starlingxv1.Host,
+	host *v1info.HostInfo,
+	network_instance *starlingxv1.PlatformNetwork,
+	addrpool_instance *starlingxv1.AddressPool,
+	system_info *cloudManager.SystemInfo) error {
+
+	if system_info.SystemType == cloudManager.SystemTypeAllInOne &&
+		system_info.SystemMode == cloudManager.SystemModeSimplex {
+
+		return r.ReconcilePlatformNetworkPrincipalSimplex(client, host_instance, host, network_instance, addrpool_instance, system_info)
+
 	}
 
 	return nil
@@ -850,13 +983,21 @@ func (r *HostReconciler) ReconcilePlatformNetworkBootstrap(
 func (r *HostReconciler) ReconcilePlatformNetworkAndAddrPoolResource(
 	client *gophercloud.ServiceClient,
 	host_instance *starlingxv1.Host,
+	host *v1info.HostInfo,
 	network_instance *starlingxv1.PlatformNetwork,
 	addrpool_instance *starlingxv1.AddressPool,
 	system_info *cloudManager.SystemInfo) error {
 
 	if network_instance.Status.DeploymentScope == cloudManager.ScopeBootstrap {
+
 		return r.ReconcilePlatformNetworkBootstrap(client, host_instance, network_instance, addrpool_instance, system_info)
+
+	} else if network_instance.Status.DeploymentScope == cloudManager.ScopePrincipal {
+
+		return r.ReconcilePlatformNetworkPrincipal(client, host_instance, host, network_instance, addrpool_instance, system_info)
+
 	}
+
 	return nil
 
 }
@@ -895,9 +1036,16 @@ func (r *HostReconciler) ReconcilePlatformNetworks(client *gophercloud.ServiceCl
 				logHost.Error(err, "Failed to get addrpool resource from namespace")
 				errs = append(errs, err)
 			} else {
-				err = r.ReconcilePlatformNetworkAndAddrPoolResource(client, instance, platform_network_instance, addrpool_instance, system_info)
+				err = r.ReconcilePlatformNetworkAndAddrPoolResource(client, instance, host, platform_network_instance, addrpool_instance, system_info)
 				if err != nil {
 					errs = append(errs, err)
+
+					cause := perrors.Cause(err)
+					if _, ok := cause.(cloudManager.WaitForMonitor); ok {
+						// Perform no further reconciliations until host reaches
+						// expected state.
+						return errs
+					}
 				}
 			}
 		}
