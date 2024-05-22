@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gophercloud/gophercloud"
-	th "github.com/gophercloud/gophercloud/testhelper"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,10 +14,11 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	// comm "github.com/wind-river/cloud-platform-deployment-manager/common"
-	gcClient "github.com/gophercloud/gophercloud/testhelper/client"
+	comm "github.com/wind-river/cloud-platform-deployment-manager/common"
 	starlingxv1 "github.com/wind-river/cloud-platform-deployment-manager/api/v1"
 	cloudManager "github.com/wind-river/cloud-platform-deployment-manager/controllers/manager"
+	"github.com/wind-river/cloud-platform-deployment-manager/controllers"
+	utils "github.com/wind-river/cloud-platform-deployment-manager/common"
 )
 
 var k8sManager, _ = ctrl.NewManager(cfg, ctrl.Options{
@@ -43,11 +42,20 @@ func IntroducePlatformNetworkChange(platform_network *starlingxv1.PlatformNetwor
 	}
 }
 
+func IntroduceAddrPoolChange(addrpool *starlingxv1.AddressPool) {
+	if utils.IsIPv4(addrpool.Spec.Subnet) {
+		addrpool.Spec.Subnet = "100.100.100.100"
+	} else {
+		addrpool.Spec.Subnet = "100::100"
+	}
+}
+
 func CreateDummyHost(hostname string) {
 	annotations := make(map[string]string)
 	annotations["kubectl.kubernetes.io/last-applied-configuration"] = `{"status":{"deploymentScope":"bootstrap"}}`
 
 	personality_controller := "controller"
+	admin_state := "unlocked"
 	interfaces := &starlingxv1.InterfaceInfo{}
 	dummy_hostprofile := &starlingxv1.HostProfile{
 		ObjectMeta: metav1.ObjectMeta{
@@ -57,6 +65,7 @@ func CreateDummyHost(hostname string) {
 		Spec: starlingxv1.HostProfileSpec{
 			ProfileBaseAttributes: starlingxv1.ProfileBaseAttributes{
 				Personality: &personality_controller,
+				AdministrativeState: &admin_state,
 			},
 			Interfaces: interfaces,
 		}}
@@ -82,6 +91,16 @@ func CreateDummyHost(hostname string) {
 			},
 		}}
 	Expect(k8sClient.Create(ctx, dummy_host)).To(Succeed())
+
+	Eventually(func() bool {
+		crd_key := types.NamespacedName{
+			Name:      hostname,
+			Namespace: TestNamespace,
+		}
+		crd_fetched := &starlingxv1.Host{}
+		err := k8sClient.Get(ctx, crd_key, crd_fetched)
+		return err == nil && crd_fetched.Status.Defaults != nil
+	}, timeout, interval).Should(BeTrue())
 
 }
 
@@ -169,6 +188,36 @@ func DeletePlatformNetwork(nwk_name string) {
 		return err != nil
 	}, timeout, interval).Should(BeTrue())
 }
+
+func DeleteAddressPool(pool_name string) {
+	key := types.NamespacedName{
+		Name:      pool_name,
+		Namespace: TestNamespace,
+	}
+
+	fetched := &starlingxv1.AddressPool{}
+
+	Eventually(func() bool {
+		err := k8sClient.Get(ctx, key, fetched)
+		if err == nil {
+			fetched.ObjectMeta.Finalizers = []string{}
+			err = k8sClient.Update(ctx, fetched)
+			if err == nil {
+				err = k8sClient.Delete(ctx, fetched)
+				if err == nil {
+					return true
+				}
+			}
+		}
+		return false
+	}, timeout, interval).Should(BeTrue())
+
+	Eventually(func() bool {
+		err := k8sClient.Get(ctx, key, fetched)
+		return err != nil
+	}, timeout, interval).Should(BeTrue())
+}
+
 func SimulateVIMStrategyAction(hostname string, expect_strategy string) {
 	host_key := types.NamespacedName{
 		Name:      hostname,
@@ -194,44 +243,66 @@ var _ = Describe("Networking utils", func() {
 
 	Context("PlatformNetwork with correct mgmt/admin/oam network data in Day-1", func() {
 		It("Should be created successfully and Reconciled & InSync should be 'true'", func() {
-			th.SetupHTTP()
 			tMgr := cloudManager.GetInstance(k8sManager)
-			f := func(namespace string) *gophercloud.ServiceClient {
-				return gcClient.ServiceClient()
-			}
-			tMgr.SetGetPlatformClient(f)
-			CreateDummyHost("controller-0")
-			defer DeleteDummyHost("controller-0")
 			HostControllerAPIHandlers()
 			tMgr.SetSystemReady(TestNamespace, true)
+
+			CreateDummyHost("controller-0")
+			defer DeleteDummyHost("controller-0")
+
 			network_names := []string{"mgmt", "admin", "oam"}
-			platform_networks := GetPlatformNetworksFromFixtures(TestNamespace)
+			platform_networks, address_pools := GetPlatformNetworksFromFixtures(TestNamespace)
 			ctx := context.Background()
 			for _, nwk_name := range network_names {
-				key := types.NamespacedName{
+
+				key_net := types.NamespacedName{
 					Name:      nwk_name,
 					Namespace: TestNamespace,
 				}
 				Expect(k8sClient.Create(ctx, platform_networks[nwk_name])).To(Succeed())
-				//	expected := platform_networks[nwk_name].DeepCopy()
 
-				fetched := &starlingxv1.PlatformNetwork{}
-				// Eventually(func() bool {
-				_ = k8sClient.Get(ctx, key, fetched)
-				// log.Println("#### Error:  ", err)
-				//log.Println("#### fetched:  ", fetched)
-				// log.Println("#### expected:  ", expected)
-				// log.Println("#### fetched status:  ", fetched.Status)
-				// return err == nil // &&
-				// fetched.ObjectMeta.ResourceVersion != expected.ObjectMeta.ResourceVersion &&
-				// fetched.Status.Reconciled == true &&
-				// fetched.Status.InSync == true
-				// }, timeout, interval).Should(BeTrue())
-				// _, found := comm.ListIntersect(fetched.ObjectMeta.Finalizers, []string{PlatformNetworkFinalizerName})
-				// Expect(found).To(BeTrue())
-				// DeletePlatformNetwork(nwk_name)
+				expected_platformnetwork := platform_networks[nwk_name].DeepCopy()
 
-				// })
+				for _, pool := range address_pools[nwk_name] {
+					IntroduceAddrPoolChange(pool)
+
+					Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+				}
+
+				fetched_net := &starlingxv1.PlatformNetwork{}
+				Eventually(func() bool {
+					err := k8sClient.Get(ctx, key_net, fetched_net)
+					return err == nil &&
+						fetched_net.ObjectMeta.ResourceVersion != expected_platformnetwork.ObjectMeta.ResourceVersion &&
+						fetched_net.Status.Reconciled == true &&
+						fetched_net.Status.InSync == true
+				}, timeout, interval).Should(BeTrue())
+				_, found := comm.ListIntersect(fetched_net.ObjectMeta.Finalizers, []string{controllers.PlatformNetworkFinalizerName})
+				Expect(found).To(BeTrue())
+
+				for _, pool := range address_pools[nwk_name] {
+					expected_addrpool := pool.DeepCopy()
+
+					key_pool := types.NamespacedName{
+						Name:      pool.Name,
+						Namespace: TestNamespace,
+					}
+
+					fetched_pool := &starlingxv1.AddressPool{}
+					Eventually(func() bool {
+						err := k8sClient.Get(ctx, key_pool, fetched_pool)
+						return err == nil &&
+							fetched_pool.ObjectMeta.ResourceVersion != expected_addrpool.ObjectMeta.ResourceVersion &&
+							fetched_pool.Status.Reconciled == true &&
+							fetched_pool.Status.InSync == false
+					}, timeout, interval).Should(BeTrue())
+					_, found = comm.ListIntersect(fetched_pool.ObjectMeta.Finalizers, []string{controllers.AddressPoolFinalizerName})
+					Expect(found).To(BeTrue())
+
+					DeleteAddressPool(pool.Name)
+				}
+
+				DeletePlatformNetwork(nwk_name)
 			}
 		})
 	})

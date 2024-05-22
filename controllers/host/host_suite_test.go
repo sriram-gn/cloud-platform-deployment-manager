@@ -20,6 +20,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest/printer"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	th "github.com/gophercloud/gophercloud/testhelper"
+	gcClient "github.com/gophercloud/gophercloud/testhelper/client"
+	cloudManager "github.com/wind-river/cloud-platform-deployment-manager/controllers/manager"
+	"github.com/gophercloud/gophercloud"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -41,6 +46,7 @@ func TestControllers(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	th.SetupHTTP()
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
@@ -99,6 +105,12 @@ var _ = BeforeSuite(func() {
 		Scheme: k8sManager.GetScheme(),
 	}).SetupWithManager(k8sManager)
 
+	tMgr := cloudManager.GetInstance(k8sManager)
+	f := func(namespace string) *gophercloud.ServiceClient {
+		return gcClient.ServiceClient()
+	}
+	tMgr.SetGetPlatformClient(f)
+
 	go func() {
 		defer GinkgoRecover()
 		err = k8sManager.Start(ctx)
@@ -107,6 +119,7 @@ var _ = BeforeSuite(func() {
 }, 60)
 
 var _ = AfterSuite(func() {
+	th.TeardownHTTP()
 	cancel()
 	By("tearing down the test environment")
 	err := testEnv.Stop()

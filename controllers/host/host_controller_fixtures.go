@@ -9,10 +9,12 @@ import (
 
 	"github.com/gophercloud/gophercloud/starlingx/inventory/v1/addresspools"
 	"github.com/gophercloud/gophercloud/starlingx/inventory/v1/networks"
+	"github.com/gophercloud/gophercloud/starlingx/inventory/v1/networkAddressPools"
 	th "github.com/gophercloud/gophercloud/testhelper"
 	starlingxv1 "github.com/wind-river/cloud-platform-deployment-manager/api/v1"
 	cloudManager "github.com/wind-river/cloud-platform-deployment-manager/controllers/manager"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utils "github.com/wind-river/cloud-platform-deployment-manager/common"
 )
 
 const AddrPoolListBody = `
@@ -85,7 +87,75 @@ const AddrPoolListBody = `
             "prefix": 24,
             "order": "random",
             "uuid": "28f8fabb-43df-4458-a256-d9195e2b669e"
-        }
+        },
+		{
+			"gateway_address": null,
+			"network": "fcff:1::0",
+			"name": "management-ipv6",
+			"ranges": [
+				[
+					"fcff:1::2",
+					"fcff:1::50"
+				]
+			],
+			"floating_address": "fcff:1::2",
+			"controller0_address": "fcff:1::3",
+			"controller1_address": "fcff:1::4",
+			"prefix": 64,
+			"order": "random",
+			"uuid": "aa277c8e-7421-4721-ae6a-347771fe4666"
+		},
+		{
+			"gateway_address": "fcff:2::1",
+			"network": "fcff:2::0",
+			"name": "oam-ipv6",
+			"ranges": [
+				[
+					"fcff:2::2",
+					"fcff:2::254"
+				]
+			],
+			"floating_address": "fcff:2::2",
+			"controller0_address": "fcff:2::3",
+			"controller1_address": "fcff:2::4",
+			"prefix": 64,
+			"order": "random",
+			"uuid": "384c6eb3-d48b-486e-8151-7dcecd377666"
+		},
+		{
+			"gateway_address": "fcff:3::1",
+			"network": "fcff:3::0",
+			"name": "admin-ipv6",
+			"ranges": [
+				[
+					"fcff:3::2",
+					"fcff:3::50"
+				]
+			],
+			"floating_address": "fcff:3::2",
+			"controller0_address": "fcff:3::3",
+			"controller1_address": "fcff:3::4",
+			"prefix": 64,
+			"order": "random",
+			"uuid": "be2eb19c-4b47-88ec-82c5-6b29097cf666"
+		},
+		{
+			"gateway_address": null,
+			"network": "fcff:4::0",
+			"name": "cluster-host-ipv6",
+			"ranges": [
+				[
+					"fcff:4::2",
+					"fcff:4::254"
+				]
+			],
+			"floating_address": "fcff:4::2",
+			"controller0_address": "fcff:4::3",
+			"controller1_address": "fcff:4::4",
+			"prefix": 64,
+			"order": "random",
+			"uuid": "28f8fabb-43df-4458-a256-d9195e2b6666"
+		}
     ]
 }
 `
@@ -97,25 +167,28 @@ const NetworkListBody = `
 			"dynamic": false,
 			"id": 1,
 			"name": "admin",
-			"pool_uuid": "be2eb19c-4b47-88ec-82c5-6b29097cf439",
+			"pool_uuid": "be2eb19c-4b47-88ec-82c5-6b29097cf666",
 			"type": "admin",
-			"uuid": "c434c909-f2eb-4a4e-87f1-525cbe9b1ec2"
+			"uuid": "c434c909-f2eb-4a4e-87f1-525cbe9b1ec2",
+			"primary_pool_family": "ipv6"
         },
         {
 			"dynamic": true,
 			"id": 2,
 			"name": "mgmt",
-			"pool_uuid": "aa277c8e-7421-4721-ae6a-347771fe4fa6",
+			"pool_uuid": "aa277c8e-7421-4721-ae6a-347771fe4666",
 			"type": "mgmt",
-			"uuid": "a48a7b6d-9cfa-24a4-8d48-f0e25d35984a"
+			"uuid": "a48a7b6d-9cfa-24a4-8d48-f0e25d35984a",
+			"primary_pool_family": "ipv6"
         },
 		{
 			"dynamic": false,
 			"id": 3,
 			"name": "oam",
-			"pool_uuid": "384c6eb3-d48b-486e-8151-7dcecd3779df",
+			"pool_uuid": "384c6eb3-d48b-486e-8151-7dcecd377666",
 			"type": "oam",
-			"uuid": "32665423-d48b-486e-8151-7dcecd3779df"
+			"uuid": "32665423-d48b-486e-8151-7dcecd3779df",
+			"primary_pool_family": "ipv6"
 		},
 		{
 			"dynamic": true,
@@ -123,7 +196,80 @@ const NetworkListBody = `
 			"name": "pxeboot",
 			"pool_uuid": "28f8fabb-43df-4458-a256-d9195e2b669e",
 			"type": "pxeboot",
-			"uuid": "0bebc4ef-e8e4-1248-b9d5-8694a79f58cc"
+			"uuid": "0bebc4ef-e8e4-1248-b9d5-8694a79f58cc",
+			"primary_pool_family": "ipv4"
+		},
+		{
+			"dynamic": true,
+			"id": 4,
+			"name": "cluster-host",
+			"pool_uuid": "28f8fabb-43df-4458-a256-d9195e2b6666",
+			"type": "cluster-host",
+			"uuid": "0bebc4ef-e8e4-1248-b9d5-8694a79f58cd",
+			"primary_pool_family": "ipv6"
+		}
+    ]
+}
+`
+
+const NetworkAddressPoolListBody = `
+{
+    "network_addresspools": [
+		{
+			"uuid": "11111111-a6e5-425e-9317-995da88d6694",
+			"network_uuid": "c434c909-f2eb-4a4e-87f1-525cbe9b1ec2",
+			"address_pool_uuid": "be2eb19c-4b47-88ec-82c5-6b29097cf666",
+			"network_name": "admin",
+			"address_pool_name": "admin-ipv6"
+		},
+		{
+			"uuid": "11111111-2222-425e-9317-995da88d6694",
+			"network_uuid": "c434c909-f2eb-4a4e-87f1-525cbe9b1ec2",
+			"address_pool_uuid": "be2eb19c-4b47-88ec-82c5-6b29097cf439",
+			"network_name": "admin",
+			"address_pool_name": "admin"
+		},
+		{
+			"uuid": "22222222-a6e5-425e-9317-995da88d6694",
+			"network_uuid": "a48a7b6d-9cfa-24a4-8d48-f0e25d35984a",
+			"address_pool_uuid": "aa277c8e-7421-4721-ae6a-347771fe4666",
+			"network_name": "mgmt",
+			"address_pool_name": "management-ipv6"
+		},
+		{
+			"uuid": "22222222-2222-425e-9317-995da88d6694",
+			"network_uuid": "a48a7b6d-9cfa-24a4-8d48-f0e25d35984a",
+			"address_pool_uuid": "aa277c8e-7421-4721-ae6a-347771fe4fa6",
+			"network_name": "mgmt",
+			"address_pool_name": "management"
+		},
+		{
+			"uuid": "33333333-a6e5-425e-9317-995da88d6694",
+			"network_uuid": "32665423-d48b-486e-8151-7dcecd3779df",
+			"address_pool_uuid": "384c6eb3-d48b-486e-8151-7dcecd377666",
+			"network_name": "oam",
+			"address_pool_name": "oam-ipv6"
+		},
+		{
+			"uuid": "33333333-2222-425e-9317-995da88d6694",
+			"network_uuid": "32665423-d48b-486e-8151-7dcecd3779df",
+			"address_pool_uuid": "384c6eb3-d48b-486e-8151-7dcecd3779df",
+			"network_name": "oam",
+			"address_pool_name": "oam"
+		},
+		{
+			"uuid": "44444444-a6e5-425e-9317-995da88d6694",
+			"network_uuid": "0bebc4ef-e8e4-1248-b9d5-8694a79f58cc",
+			"address_pool_uuid": "28f8fabb-43df-4458-a256-d9195e2b669e",
+			"network_name": "pxeboot",
+			"address_pool_name": "pxeboot"
+		},
+		{
+			"uuid": "55555555-a6e5-425e-9317-995da88d6694",
+			"network_uuid": "0bebc4ef-e8e4-1248-b9d5-8694a79f58cd",
+			"address_pool_uuid": "28f8fabb-43df-4458-a256-d9195e2b6666",
+			"network_name": "cluster-host",
+			"address_pool_name": "cluster-host-ipv6"
 		}
     ]
 }
@@ -225,7 +371,7 @@ const HostBody = `
 		  "administrative": "unlocked",
 		  "apparmor": "disabled",
 		  "hw_settle": "0",
-		  "availability": "online",
+		  "availability": "available",
 		  "max_cpu_mhz_configured": "1800",
 		  "inv_state": "inventoried",
 		  "operational": "enabled",
@@ -261,7 +407,7 @@ const HostsListBody = `
 		  "administrative": "unlocked",
 		  "apparmor": "disabled",
 		  "hw_settle": "0",
-		  "availability": "online",
+		  "availability": "available",
 		  "max_cpu_mhz_configured": "1800",
 		  "inv_state": "inventoried",
 		  "operational": "enabled",
@@ -976,38 +1122,53 @@ func OtherAPIS() {
 	th.Mux.HandleFunc("/clusters/1/storage_tiers", HandleStorageTierRequests)
 }
 
-func GetPlatformNetworksFromFixtures(namespace string) map[string]*starlingxv1.PlatformNetwork {
+func GetPlatformNetworksFromFixtures(namespace string) (map[string]*starlingxv1.PlatformNetwork, map[string][]*starlingxv1.AddressPool) {
 	PlatformNetworks := make(map[string]*starlingxv1.PlatformNetwork)
-
+	AddressPoolInstances := make(map[string][]*starlingxv1.AddressPool)
 	var Networks struct {
 		NetworkList []networks.Network `json:"networks"`
+	}
+	var NetworkAddressPools struct {
+		NetworkAddressPoolList []networkAddressPools.NetworkAddressPool `json:"network_addresspools"`
 	}
 	var AddressPools struct {
 		AddressPoolList []addresspools.AddressPool `json:"addrpools"`
 	}
 
 	_ = json.Unmarshal([]byte(NetworkListBody), &Networks)
+	_ = json.Unmarshal([]byte(NetworkAddressPoolListBody), &NetworkAddressPools)
 	_ = json.Unmarshal([]byte(AddrPoolListBody), &AddressPools)
 
-	for _, network := range Networks.NetworkList {
-		for _, addrpool := range AddressPools.AddressPoolList {
-			if network.PoolUUID == addrpool.ID {
-				PlatformNetworks[network.Type] = &starlingxv1.PlatformNetwork{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      network.Name,
-						Namespace: namespace,
-					},
-					Spec: starlingxv1.PlatformNetworkSpec{
-						Type:                   network.Type,
-						Dynamic:                false,
-						AssociatedAddressPools: []string{"010", "001"},
-					},
-				}
+	for _, network_addr_pool := range NetworkAddressPools.NetworkAddressPoolList {
+		network := utils.GetSystemNetworkByName(Networks.NetworkList, network_addr_pool.NetworkName)
+		addrpool := utils.GetSystemAddrPoolByName(AddressPools.AddressPoolList, network_addr_pool.AddressPoolName)
+
+		if _, ok := PlatformNetworks[network.Type]; ok {
+			PlatformNetworks[network.Type].Spec.AssociatedAddressPools = append(PlatformNetworks[network.Type].Spec.AssociatedAddressPools,
+				network_addr_pool.AddressPoolName)
+		} else {
+			PlatformNetworks[network.Type] = &starlingxv1.PlatformNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      network.Name,
+					Namespace: namespace,
+				},
+				Spec: starlingxv1.PlatformNetworkSpec{
+					Type:                   network.Type,
+					Dynamic:                network.Dynamic,
+					AssociatedAddressPools: []string{network_addr_pool.AddressPoolName},
+				},
 			}
+
+		}
+
+		addrpool_inst, err := starlingxv1.NewAddressPool(namespace, *addrpool)
+		if err == nil {
+			AddressPoolInstances[network.Type] = append(AddressPoolInstances[network.Type], addrpool_inst)
 		}
 	}
 
-	return PlatformNetworks
+
+	return PlatformNetworks, AddressPoolInstances
 }
 
 func HostControllerAPIHandlers() {
