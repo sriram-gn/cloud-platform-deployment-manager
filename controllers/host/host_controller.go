@@ -140,7 +140,7 @@ const (
 )
 
 func (r *HostReconciler) IsActiveHost(client *gophercloud.ServiceClient, instance *starlingxv1.Host, request_namespace string) (bool, error) {
-	host_instance, err := r.CloudManager.GetActiveHost(request_namespace, client)
+	host_instance, _, err := r.CloudManager.GetHostByPersonality(request_namespace, client, cloudManager.PersonalityActiveController)
 	if err != nil {
 		msg := "failed to get active host"
 		return false, common.NewUserDataError(msg)
@@ -2194,6 +2194,7 @@ func (r *HostReconciler) Reconcile(ctx context.Context, request ctrl.Request) (r
 	if instance.Status.ObservedGeneration == instance.ObjectMeta.Generation &&
 		instance.Status.Reconciled &&
 		instance.Status.DeploymentScope == "bootstrap" &&
+		instance.Status.StrategyRequired == cloudManager.StrategyNotRequired &&
 		!platformnetwork_update_required {
 
 		if !scope_updated {
@@ -2428,16 +2429,10 @@ func (r *HostReconciler) GetAddressPoolsFromPlatformNetwork(associated_addrpools
 // host monitor and returns LockedDisabledHost monitor error.
 // This would initiate lock request of a host through VIM so that disabled attributes
 // can be reconciled later.
-func (r *HostReconciler) LockHostRequest(host_instance *starlingxv1.Host, host_id string, host_personality string, reconcile_object string) error {
+func (r *HostReconciler) LockHostRequest(notify_instance *starlingxv1.Host, host_instance *starlingxv1.Host, host_id string, host_personality string, reconcile_object string) error {
 
 	if host_instance.Status.StrategyRequired != cloudManager.StrategyLockRequired {
 		host_instance.Status.StrategyRequired = cloudManager.StrategyLockRequired
-
-		r.CloudManager.SetResourceInfo(cloudManager.ResourceHost,
-			host_personality,
-			host_instance.Name,
-			host_instance.Status.Reconciled,
-			host_instance.Status.StrategyRequired)
 
 		err := r.Client.Status().Update(context.TODO(), host_instance)
 		if err != nil {
@@ -2446,8 +2441,14 @@ func (r *HostReconciler) LockHostRequest(host_instance *starlingxv1.Host, host_i
 		}
 	}
 
+	r.CloudManager.SetResourceInfo(cloudManager.ResourceHost,
+		host_personality,
+		host_instance.Name,
+		host_instance.Status.Reconciled,
+		host_instance.Status.StrategyRequired)
+
 	msg := fmt.Sprintf("Waiting for %s to be in locked state to reconcile %s", host_instance.Name, reconcile_object)
-	m := NewLockedDisabledHostMonitor(host_instance, host_id)
+	m := NewLockedDisabledHostMonitor(notify_instance, host_id)
 	return r.CloudManager.StartMonitor(m, msg)
 
 }

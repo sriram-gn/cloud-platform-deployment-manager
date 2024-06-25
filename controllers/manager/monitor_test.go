@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/starlingx/inventory/v1/hosts"
 	"github.com/gophercloud/gophercloud/starlingx/nfv/v1/systemconfigupdate"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -352,8 +353,8 @@ func (m *Dummymanager) StartMonitor(monitor *Monitor, message string) error {
 func (m *Dummymanager) CancelMonitor(object client.Object) {
 
 }
-func (m *Dummymanager) GetActiveHost(namespace string, client *gophercloud.ServiceClient) (*v1.Host, error) {
-	return nil, nil
+func (m *Dummymanager) GetHostByPersonality(namespace string, client *gophercloud.ServiceClient, personality string) (*v1.Host, *hosts.Host, error) {
+	return nil, nil, nil
 }
 func (m *Dummymanager) GetSystemInfo(namespace string, client *gophercloud.ServiceClient) (*SystemInfo, error) {
 	return nil, nil
